@@ -97,8 +97,22 @@ function tileAt(x, y) {
   return grid[y][x];
 }
 
-function passableLocal(tx, ty) {
-  return tileAt(tx, ty) === 0;
+function hasBombAt(tx, ty) {
+  if (!snap || !snap.bombs) return false;
+  for (const b of snap.bombs) {
+    if (b.x === tx && b.y === ty) return true;
+  }
+  return false;
+}
+
+function passableLocal(tx, ty, fromX, fromY) {
+  if (tileAt(tx, ty) !== 0) return false;
+  // A bomb blocks its tile UNLESS we're already standing on it (so we can
+  // step off a bomb we just placed).
+  if (hasBombAt(tx, ty)) {
+    return tx === fromX && ty === fromY;
+  }
+  return true;
 }
 
 function moveLocal(p, dir, dt) {
@@ -114,7 +128,7 @@ function moveLocal(p, dir, dt) {
     const edge = nx + 0.45 * dx;
     const tx = Math.floor(edge);
     const ty = Math.floor(p.y);
-    if (passableLocal(tx, ty)) {
+    if (passableLocal(tx, ty, curTx, curTy)) {
       p.x = nx;
     } else {
       p.x = Math.floor(p.x) + 0.5;
@@ -125,7 +139,7 @@ function moveLocal(p, dir, dt) {
     const tx = Math.floor(p.x);
     const edge = ny + 0.45 * dy;
     const ty = Math.floor(edge);
-    if (passableLocal(tx, ty)) {
+    if (passableLocal(tx, ty, curTx, curTy)) {
       p.y = ny;
     } else {
       p.y = Math.floor(p.y) + 0.5;
