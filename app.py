@@ -25,13 +25,28 @@ TICK_RATE = 20  # server ticks per second
 BOMB_TIMER = 2.5
 EXPLOSION_DURATION = 0.5
 SHIELD_DURATION = 6.0
+HIT_SHIELD_DURATION = 3.0  # post-hit i-frames after losing 1 hp to a bomb/poison
 RESPAWN_DELAY = 0  # no respawn; last man standing
+
+# Poison: discourages camping by spawning hazard tiles part-way through the
+# match. POISON_FIRST_SPAWN_S into the game we drop POISON_INITIAL_SOURCES
+# poison tiles on empty floor. Each poison tile is INERT for POISON_ARM_S
+# (visible but harmless — a warning), then DAMAGING. Every poison tile, once
+# armed, tries to propagate to one passable neighbour after POISON_PROPAGATE_S
+# (own clock, resets after propagating so it doesn't spread infinitely from
+# one source).
+POISON_FIRST_SPAWN_S = 15.0
+POISON_INITIAL_SOURCES = 6
+POISON_ARM_S = 5.0           # inert period after spawn
+POISON_PROPAGATE_S = 10.0    # delay before a poison tries to spread
+
 POWERUP_CHANCES = {
-    "fire": 0.35,
-    "speed": 0.15,
-    "bombs": 0.15,
-    "shield": 0.15,
-    # remaining 20% -> nothing
+    "fire": 0.30,
+    "speed": 0.13,
+    "bombs": 0.13,
+    "shield": 0.13,
+    "hp": 0.13,
+    # remaining ~18% -> nothing
 }
 
 # Tile codes
@@ -90,6 +105,13 @@ class GameState:
         self.bombs = []
         self.explosions = []
         self.powerups = {}  # (x,y) -> type
+        # Poison field. (x,y) -> {"spawned_at": float, "armed_at": float,
+        #                          "propagate_at": float, "propagated": bool}
+        # `armed_at` is when the tile starts hurting; `propagate_at` is when
+        # it spreads to one passable neighbour (once, then `propagated=True`).
+        self.poisons = {}
+        # Have we done the initial poison spawn for this round?
+        self.poison_seeded = False
         self.grid = []
         self.lobby_start_ts = None
         self.game_start_ts = None
@@ -131,6 +153,7 @@ class GameState:
             p["active_bombs"] = 0
             p["shield_until"] = 0.0
             p["move_dir"] = None
+            p["hp"] = 1
         # only humans' icons stay reserved
         self.used_icons = {p["icon"] for p in kept.values()}
         self.spectators = set()
@@ -144,6 +167,8 @@ class GameState:
         self.lobby_start_ts = None
         self.game_start_ts = None
         self.winner = None
+        self.poisons = {}
+        self.poison_seeded = False
         # rotate host if previous one left
         if self.host_sid not in kept:
             self.host_sid = next(iter(kept), None)
@@ -229,6 +254,11 @@ def new_player(name, is_bot=False):
         "icon": 1,
         "is_bot": is_bot,
         "move_dir": None,
+        # Health system. Default 1 hp = lethal on first hit (matches original
+        # Bomberman). Picking up an "hp" powerup grants +1 hp. When hit by a
+        # bomb or poison without a shield, lose 1 hp and gain a short
+        # invulnerability window (HIT_SHIELD_DURATION).
+        "hp": 1,
         # End-of-round stats for the leaderboard.
         "kills": 0,
         "died_at": None,
@@ -631,6 +661,8 @@ def start_game():
 
     STATE.grid = make_map()
     STATE.grid_dirty = True
+    STATE.poisons = {}
+    STATE.poison_seeded = False
     spawns = generate_spawns()
     random.shuffle(spawns)
     for i, (sid, p) in enumerate(STATE.players.items()):
@@ -724,6 +756,10 @@ def tick(dt, now):
     # explosions cleanup
     STATE.explosions = [e for e in STATE.explosions if now < e["until"]]
 
+    # poison: seed initial sources once we hit POISON_FIRST_SPAWN_S into the
+    # round, then propagate each armed source every POISON_PROPAGATE_S.
+    update_poison(now)
+
     # damage check
     for sid, p in STATE.players.items():
         if not p["alive"]:
@@ -731,26 +767,13 @@ def tick(dt, now):
         px, py = int(p["x"]), int(p["y"])
         for e in STATE.explosions:
             if (px, py) in e["cells"] and now < e["until"]:
-                if now < p["shield_until"]:
-                    continue
-                p["alive"] = False
-                p["died_at"] = now
-                p["active_bombs"] = 0
-                # credit the kill (suicide = self-kill, doesn't count)
                 killer_sid = e.get("owner")
-                killer = STATE.players.get(killer_sid)
-                if killer and killer_sid != sid:
-                    killer["kills"] = killer.get("kills", 0) + 1
-                    p["killed_by"] = killer["name"]
-                else:
-                    p["killed_by"] = p["name"] if killer_sid == sid else "?"
-                # Why did this bot die? Log everything we know: where it was,
-                # what it was doing, which path it had picked. Suicides are
-                # printed louder so the eye catches them in the scrollback.
-                if p["is_bot"]:
+                hit = take_damage(p, sid, now, source="bomb", killer_sid=killer_sid)
+                if hit and not p["alive"] and p["is_bot"]:
                     bs = p.get("bot_state", {})
                     suicide = (killer_sid == sid)
                     tag = "SUICIDE" if suicide else "killed"
+                    killer = STATE.players.get(killer_sid)
                     killer_name = (killer["name"] if killer else "?") if not suicide else "self"
                     print(f"[DEATH/{tag}] {p['name']:<14} @({px},{py}) by {killer_name:<14} "
                           f"| intent={bs.get('intent','?'):<5} "
@@ -760,8 +783,16 @@ def tick(dt, now):
                           f"| last_bomb_xy={bs.get('last_bomb_xy')} "
                           f"active_bombs_pre={p.get('active_bombs', 0)}")
                 break
+
+        # poison contact damage (only if the tile we're standing on has an
+        # ARMED poison — newly spawned poisons have a grace period).
+        if p["alive"]:
+            ps = STATE.poisons.get((px, py))
+            if ps and now >= ps["armed_at"]:
+                take_damage(p, sid, now, source="poison")
+
         # pickup
-        if (px, py) in STATE.powerups:
+        if p["alive"] and (px, py) in STATE.powerups:
             apply_powerup(p, STATE.powerups[(px, py)])
             del STATE.powerups[(px, py)]
 
@@ -876,6 +907,116 @@ def apply_powerup(p, kind):
         p["speed"] = min(p["speed"] + 0.6, 7.0)
     elif kind == "shield":
         p["shield_until"] = time.time() + SHIELD_DURATION
+    elif kind == "hp":
+        p["hp"] += 1
+
+
+def take_damage(p, sid, now, source="bomb", killer_sid=None):
+    """Apply 1 point of damage to player `p`. If they have an active shield,
+    the hit is absorbed entirely. Otherwise hp drops by 1, they gain a 3s
+    post-hit shield (i-frames), and only die when hp hits 0.
+
+    `source` is "bomb" or "poison" — used for kill attribution and logging.
+    `killer_sid` is the bomb owner (for bombs). For poison, killer_sid is
+    None and the death is logged as "envenenado".
+
+    Returns True if the hit landed (hp lost), False if absorbed by shield.
+    """
+    if now < p["shield_until"]:
+        return False
+    p["hp"] -= 1
+    # i-frame shield so consecutive ticks of the same explosion (or stepping
+    # off then onto a poison) don't drain hp instantly.
+    p["shield_until"] = now + HIT_SHIELD_DURATION
+    if p["hp"] > 0:
+        return True
+    # hp <= 0 — player dies.
+    p["alive"] = False
+    p["died_at"] = now
+    p["active_bombs"] = 0
+    killer = STATE.players.get(killer_sid) if killer_sid else None
+    if source == "poison":
+        p["killed_by"] = "envenenado"
+    elif killer and killer_sid != sid:
+        killer["kills"] = killer.get("kills", 0) + 1
+        p["killed_by"] = killer["name"]
+    else:
+        p["killed_by"] = p["name"] if killer_sid == sid else "?"
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Poison
+# ---------------------------------------------------------------------------
+def _spawn_poison(x, y, now):
+    """Drop a poison tile at (x,y). Inert for POISON_ARM_S, then damages.
+    Will try to propagate once after POISON_PROPAGATE_S (own clock)."""
+    STATE.poisons[(x, y)] = {
+        "spawned_at": now,
+        "armed_at": now + POISON_ARM_S,
+        "propagate_at": now + POISON_PROPAGATE_S,
+        "propagated": False,
+    }
+
+
+def update_poison(now):
+    """Seed the initial poison sources POISON_FIRST_SPAWN_S into the round,
+    then have each existing poison try to spread to one neighbour after its
+    own POISON_PROPAGATE_S delay (only once per tile)."""
+    if STATE.game_start_ts is None:
+        return
+    elapsed = now - STATE.game_start_ts
+
+    # Initial seeding (once).
+    if not STATE.poison_seeded and elapsed >= POISON_FIRST_SPAWN_S:
+        STATE.poison_seeded = True
+        # Pick empty floor tiles that aren't already a powerup or bomb.
+        # Try to avoid spawning right on top of a living player by keeping a
+        # 2-tile clearance.
+        candidates = []
+        alive_xy = [(int(p["x"]), int(p["y"])) for p in STATE.players.values()
+                    if p["alive"]]
+        for y in range(MAP_H):
+            for x in range(MAP_W):
+                if STATE.grid[y][x] != T_EMPTY:
+                    continue
+                if (x, y) in STATE.powerups or has_bomb_at(x, y):
+                    continue
+                # too close to a living player?
+                too_close = any(abs(x - ax) + abs(y - ay) < 3
+                                for ax, ay in alive_xy)
+                if too_close:
+                    continue
+                candidates.append((x, y))
+        random.shuffle(candidates)
+        for (x, y) in candidates[:POISON_INITIAL_SOURCES]:
+            _spawn_poison(x, y, now)
+        if candidates:
+            print(f"[poison] seeded {min(len(candidates), POISON_INITIAL_SOURCES)} sources")
+
+    # Propagation: each poison spreads once to a passable neighbour.
+    if not STATE.poisons:
+        return
+    new_tiles = []
+    for (x, y), ps in STATE.poisons.items():
+        if ps["propagated"] or now < ps["propagate_at"]:
+            continue
+        neighbours = []
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = x + dx, y + dy
+            if not (0 <= nx < MAP_W and 0 <= ny < MAP_H):
+                continue
+            if STATE.grid[ny][nx] != T_EMPTY:
+                continue
+            if (nx, ny) in STATE.poisons:
+                continue
+            neighbours.append((nx, ny))
+        ps["propagated"] = True
+        if neighbours:
+            new_tiles.append(random.choice(neighbours))
+    for (x, y) in new_tiles:
+        if (x, y) not in STATE.poisons:
+            _spawn_poison(x, y, now)
 
 
 # ---------------------------------------------------------------------------
@@ -899,14 +1040,21 @@ def bomb_blast_cells(b):
 
 def tile_in_any_blast(x, y):
     """True if (x,y) is in the future blast radius of ANY pending bomb,
-    or in any active explosion. Used as the BFS safety predicate — a tile
-    is only a valid hideout if no bomb can ever reach it."""
+    or in any active explosion, or hosts an armed (or soon-armed) poison.
+    Used as the BFS safety predicate — a tile is only a valid hideout if no
+    bomb can ever reach it and no poison is sitting on it.
+
+    We also treat *inert* poison as dangerous — it'll arm within seconds
+    and we don't want bots strolling onto a tile that's about to hurt them.
+    """
     for e in STATE.explosions:
         if (x, y) in e["cells"]:
             return True
     for b in STATE.bombs:
         if (x, y) in bomb_blast_cells(b):
             return True
+    if (x, y) in STATE.poisons:
+        return True
     return False
 
 
@@ -1364,11 +1512,16 @@ def send_snapshot():
                     "alive": p["alive"], "is_bot": p["is_bot"],
                     "shield": max(0, p["shield_until"] - now),
                     "fire": p["fire"], "bombs": p["max_bombs"], "speed": p["speed"],
+                    "hp": p["hp"],
                 })
         bombs = [{"x": b["x"], "y": b["y"], "t": max(0, b["explode_at"] - now)}
                  for b in STATE.bombs if visible(b["x"], b["y"])]
         powerups = [{"x": x, "y": y, "k": k}
                     for (x, y), k in STATE.powerups.items() if visible(x, y)]
+        poisons = [{"x": x, "y": y,
+                    "armed": now >= ps["armed_at"],
+                    "arm_in": max(0, ps["armed_at"] - now)}
+                   for (x, y), ps in STATE.poisons.items() if visible(x, y)]
         explosions = []
         for e in STATE.explosions:
             vis_cells = [c for c in e["cells"] if visible(c[0], c[1])]
@@ -1385,6 +1538,7 @@ def send_snapshot():
             "bombs": bombs,
             "explosions": explosions,
             "powerups": powerups,
+            "poisons": poisons,
         }
         if send_grid:
             payload["grid_diff"] = grid_payload
@@ -1406,6 +1560,7 @@ def send_snapshot():
                 "alive": p["alive"], "is_bot": p["is_bot"],
                 "shield": max(0, p["shield_until"] - now),
                 "fire": p["fire"], "bombs": p["max_bombs"], "speed": p["speed"],
+                "hp": p["hp"],
             }
             if p["is_bot"]:
                 bs = p.get("bot_state", {})
@@ -1424,6 +1579,10 @@ def send_snapshot():
                  for b in STATE.bombs]
         powerups = [{"x": x, "y": y, "k": k}
                     for (x, y), k in STATE.powerups.items()]
+        poisons = [{"x": x, "y": y,
+                    "armed": now >= ps["armed_at"],
+                    "arm_in": max(0, ps["armed_at"] - now)}
+                   for (x, y), ps in STATE.poisons.items()]
         explosions = [{"cells": list(e["cells"])} for e in STATE.explosions]
         return {
             "t": now,
@@ -1435,6 +1594,7 @@ def send_snapshot():
             "bombs": bombs,
             "explosions": explosions,
             "powerups": powerups,
+            "poisons": poisons,
             # Full grid every tick in debug — bandwidth doesn't matter here.
             "grid_diff": STATE.grid,
             "debug": True,

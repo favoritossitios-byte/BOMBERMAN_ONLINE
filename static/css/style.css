@@ -493,6 +493,8 @@ a:hover { text-decoration: underline; }
 .stat-shield .stat-val { color: #85e0ff; }
 .stat-alive  { border-color: rgba(231,76,60,0.5); }
 .stat-alive  .stat-val { color: #ff8b81; }
+.stat-hp     { border-color: rgba(255,80,100,0.5); }
+.stat-hp     .stat-val { color: #ff8a96; }
 
 .stat-shield.shield-off { opacity: 0.3; filter: grayscale(1); }
 .stat-shield:not(.shield-off) {

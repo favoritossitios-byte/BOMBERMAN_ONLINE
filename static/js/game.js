@@ -57,6 +57,12 @@ for (const k of ["floor", "wall1", "unbreakable", "wall2"]) {
   TILE_IMGS[k] = img;
 }
 
+// Poison sprite — overlay rendered in-game, not in the static mapCanvas
+// (because individual poison tiles can armed/disarmed independently and
+// we want to pulse them).
+const POISON_IMG = new Image();
+POISON_IMG.src = "/static/imgs/poison.png";
+
 const mapCanvas = document.createElement("canvas");
 const mapCtx = mapCanvas.getContext("2d");
 let mapDirty = true;
@@ -539,6 +545,7 @@ function draw(now) {
     bombs:  { bg: "#2c3e50", glow: "rgba(155,89,182,0.55)", icon: "💣" },
     speed:  { bg: "#f1c40f", glow: "rgba(255,241,118,0.55)", icon: "⚡" },
     shield: { bg: "#3498db", glow: "rgba(133,224,255,0.55)", icon: "🛡" },
+    hp:     { bg: "#c0392b", glow: "rgba(255,120,120,0.6)",  icon: "❤" },
   };
   const puPulse = 1 + 0.12 * Math.sin(now / 220);
   ctx.font = `${Math.floor(tilePx - 10)}px serif`;
@@ -565,6 +572,40 @@ function draw(now) {
     ctx.stroke();
 
     ctx.fillText(st.icon, sx, sy + 1);
+  }
+
+  // Poison tiles. Armed = full opacity + green pulse halo, inert = faded.
+  // The poison.png sprite is the body; we add a pulsing aura on top.
+  if (snap.poisons && POISON_IMG.complete && POISON_IMG.naturalWidth > 0) {
+    const poisonPulse = 0.6 + 0.4 * Math.sin(now / 260);
+    for (const pz of snap.poisons) {
+      if (pz.x < x0 - 1 || pz.x > x1 || pz.y < y0 - 1 || pz.y > y1) continue;
+      const sx = wx2sx(pz.x);
+      const sy = wy2sy(pz.y);
+      const cx = sx + tilePx / 2;
+      const cy = sy + tilePx / 2;
+
+      if (pz.armed) {
+        // Hazard aura.
+        ctx.fillStyle = `rgba(46, 204, 113, ${0.18 + 0.18 * poisonPulse})`;
+        ctx.beginPath();
+        ctx.arc(cx, cy, tilePx * 0.55, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      } else {
+        // Inert: faded sprite + warning ring so players know it's coming.
+        ctx.globalAlpha = 0.55;
+        ctx.strokeStyle = `rgba(46, 204, 113, ${0.6 + 0.4 * poisonPulse})`;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.arc(cx, cy, tilePx * 0.45, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      ctx.drawImage(POISON_IMG, sx + 2, sy + 2, tilePx - 4, tilePx - 4);
+      ctx.globalAlpha = 1;
+    }
   }
 
   for (const b of snap.bombs) {
@@ -723,6 +764,8 @@ function draw(now) {
     document.getElementById("hud-fire").textContent = me.fire;
     document.getElementById("hud-bombs").textContent = me.bombs;
     document.getElementById("hud-speed").textContent = me.speed.toFixed(1);
+    const hpEl = document.getElementById("hud-hp");
+    if (hpEl) hpEl.textContent = (me.hp != null) ? me.hp : 1;
     const sh = document.getElementById("hud-shield");
     if (me.shield > 0) {
       sh.classList.remove("shield-off");
