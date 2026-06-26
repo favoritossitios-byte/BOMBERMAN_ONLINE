@@ -1,10 +1,11 @@
 """Bomberman Online - Flask + SocketIO server."""
 import os
-import sqlite3
 import secrets
 import random
 import time
 import threading
+import psycopg2
+import psycopg2.extras
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -48,37 +49,33 @@ PLAYER_COLORS = [
 ICON_POOL = list(range(1, 21))
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = secrets.token_hex(32)
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "users.db")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 
 # ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
 def db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(DATABASE_URL)
     return conn
 
 
 def init_db():
     with db() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                wins INTEGER DEFAULT 0,
-                games INTEGER DEFAULT 0,
-                icon INTEGER DEFAULT 1
-            )
-        """)
-        # migrate old DBs that don't have icon column yet
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
-        if "icon" not in cols:
-            conn.execute("ALTER TABLE users ADD COLUMN icon INTEGER DEFAULT 1")
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    wins INTEGER DEFAULT 0,
+                    games INTEGER DEFAULT 0,
+                    icon INTEGER DEFAULT 1
+                )
+            """)
         conn.commit()
 
 
@@ -290,9 +287,9 @@ def login():
             error = "Preenche tudo."
         else:
             with db() as conn:
-                row = conn.execute(
-                    "SELECT * FROM users WHERE username=?", (u,)
-                ).fetchone()
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("SELECT * FROM users WHERE username=%s", (u,))
+                    row = cur.fetchone()
             if row and check_password_hash(row["password_hash"], p):
                 session["user"] = u
                 return redirect(url_for("menu"))
@@ -311,14 +308,15 @@ def register():
         else:
             try:
                 with db() as conn:
-                    conn.execute(
-                        "INSERT INTO users(username, password_hash) VALUES(?,?)",
-                        (u, generate_password_hash(p)),
-                    )
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "INSERT INTO users(username, password_hash) VALUES(%s,%s)",
+                            (u, generate_password_hash(p)),
+                        )
                     conn.commit()
                 session["user"] = u
                 return redirect(url_for("menu"))
-            except sqlite3.IntegrityError:
+            except psycopg2.errors.UniqueViolation:
                 error = "Username já existe."
     return render_template("register.html", error=error)
 
@@ -334,10 +332,12 @@ def menu():
     if "user" not in session:
         return redirect(url_for("login"))
     with db() as conn:
-        row = conn.execute(
-            "SELECT wins, games, icon FROM users WHERE username=?",
-            (session["user"],)
-        ).fetchone()
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT wins, games, icon FROM users WHERE username=%s",
+                (session["user"],)
+            )
+            row = cur.fetchone()
     return render_template("menu.html", user=session["user"],
                            wins=row["wins"] if row else 0,
                            games=row["games"] if row else 0,
@@ -356,8 +356,9 @@ def set_icon():
     if icon not in ICON_POOL:
         return jsonify({"ok": False}), 400
     with db() as conn:
-        conn.execute("UPDATE users SET icon=? WHERE username=?",
-                     (icon, session["user"]))
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET icon=%s WHERE username=%s",
+                        (icon, session["user"]))
         conn.commit()
     return jsonify({"ok": True, "icon": icon})
 
@@ -381,10 +382,12 @@ def on_connect():
     pref_icon = 1
     try:
         with db() as conn:
-            row = conn.execute("SELECT icon FROM users WHERE username=?",
-                               (session["user"],)).fetchone()
-            if row and row["icon"]:
-                pref_icon = row["icon"]
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT icon FROM users WHERE username=%s",
+                            (session["user"],))
+                row = cur.fetchone()
+                if row and row["icon"]:
+                    pref_icon = row["icon"]
     except Exception:
         pass
 
@@ -1439,8 +1442,9 @@ def end_game(winner):
     if winner and not winner["is_bot"]:
         try:
             with db() as conn:
-                conn.execute("UPDATE users SET wins=wins+1, games=games+1 WHERE username=?",
-                             (winner["name"],))
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE users SET wins=wins+1, games=games+1 WHERE username=%s",
+                                (winner["name"],))
                 conn.commit()
         except Exception:
             pass
@@ -1448,8 +1452,9 @@ def end_game(winner):
         if not p["is_bot"] and p["name"] != name:
             try:
                 with db() as conn:
-                    conn.execute("UPDATE users SET games=games+1 WHERE username=?",
-                                 (p["name"],))
+                    with conn.cursor() as cur:
+                        cur.execute("UPDATE users SET games=games+1 WHERE username=%s",
+                                    (p["name"],))
                     conn.commit()
             except Exception:
                 pass
