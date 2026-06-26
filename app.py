@@ -20,6 +20,7 @@ MAP_W = 43
 MAP_H = 37
 MAX_PLAYERS = 16
 LOBBY_WAIT_SECONDS = 120  # 2 minutes
+GAME_MAX_SECONDS = 600    # 10 minutes — force-end any game stuck this long
 TICK_RATE = 20  # server ticks per second
 BOMB_TIMER = 2.5
 EXPLOSION_DURATION = 0.5
@@ -363,6 +364,29 @@ def play():
     return render_template("game.html", user=session["user"])
 
 
+@app.route("/admin/reset", methods=["POST"])
+def admin_reset():
+    """Emergency reset — forces the global STATE back to a clean lobby."""
+    with STATE.lock:
+        STATE.phase = "lobby"
+        STATE.players = {}
+        STATE.bots = {}
+        STATE.bombs = []
+        STATE.explosions = []
+        STATE.powerups = {}
+        STATE.grid = []
+        STATE.lobby_start_ts = None
+        STATE.game_start_ts = None
+        STATE.winner = None
+        STATE.host_sid = None
+        STATE.used_icons = set()
+        STATE.spectators = set()
+        STATE.debug_viewers = set()
+        STATE.grid_dirty = True
+    socketio.emit("reset", {})
+    return "OK", 200
+
+
 # ---------------------------------------------------------------------------
 # Socket events
 # ---------------------------------------------------------------------------
@@ -577,6 +601,11 @@ def game_loop():
         last = now
         with STATE.lock:
             if STATE.phase != "playing":
+                return
+            # Force-end games that have been running too long (bots stuck, etc.)
+            if STATE.game_start_ts and now - STATE.game_start_ts > GAME_MAX_SECONDS:
+                alive = [p for p in STATE.players.values() if p["alive"]]
+                end_game(alive[0] if alive else None)
                 return
             tick(dt, now)
             snapshot_acc += dt
