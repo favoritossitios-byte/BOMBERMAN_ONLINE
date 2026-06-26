@@ -3,5 +3,5 @@ Flask-SocketIO==5.3.6
 python-socketio==5.10.0
 python-engineio==4.8.0
 Werkzeug==3.0.1
-psycopg2-binary==2.9.9
+psycopg[binary]==3.2.9
 gunicorn==21.2.0

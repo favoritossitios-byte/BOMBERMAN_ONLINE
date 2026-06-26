@@ -4,8 +4,9 @@ import secrets
 import random
 import time
 import threading
-import psycopg2
-import psycopg2.extras
+import psycopg
+from psycopg.rows import dict_row
+from psycopg.errors import UniqueViolation
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -59,24 +60,22 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 # Database
 # ---------------------------------------------------------------------------
 def db():
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
     return conn
 
 
 def init_db():
     with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id SERIAL PRIMARY KEY,
-                    username TEXT UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    wins INTEGER DEFAULT 0,
-                    games INTEGER DEFAULT 0,
-                    icon INTEGER DEFAULT 1
-                )
-            """)
-        conn.commit()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                wins INTEGER DEFAULT 0,
+                games INTEGER DEFAULT 0,
+                icon INTEGER DEFAULT 1
+            )
+        """)
 
 
 # ---------------------------------------------------------------------------
@@ -287,9 +286,9 @@ def login():
             error = "Preenche tudo."
         else:
             with db() as conn:
-                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                    cur.execute("SELECT * FROM users WHERE username=%s", (u,))
-                    row = cur.fetchone()
+                row = conn.execute(
+                    "SELECT * FROM users WHERE username=%s", (u,)
+                ).fetchone()
             if row and check_password_hash(row["password_hash"], p):
                 session["user"] = u
                 return redirect(url_for("menu"))
@@ -308,15 +307,13 @@ def register():
         else:
             try:
                 with db() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "INSERT INTO users(username, password_hash) VALUES(%s,%s)",
-                            (u, generate_password_hash(p)),
-                        )
-                    conn.commit()
+                    conn.execute(
+                        "INSERT INTO users(username, password_hash) VALUES(%s,%s)",
+                        (u, generate_password_hash(p)),
+                    )
                 session["user"] = u
                 return redirect(url_for("menu"))
-            except psycopg2.errors.UniqueViolation:
+            except UniqueViolation:
                 error = "Username já existe."
     return render_template("register.html", error=error)
 
@@ -332,12 +329,10 @@ def menu():
     if "user" not in session:
         return redirect(url_for("login"))
     with db() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT wins, games, icon FROM users WHERE username=%s",
-                (session["user"],)
-            )
-            row = cur.fetchone()
+        row = conn.execute(
+            "SELECT wins, games, icon FROM users WHERE username=%s",
+            (session["user"],)
+        ).fetchone()
     return render_template("menu.html", user=session["user"],
                            wins=row["wins"] if row else 0,
                            games=row["games"] if row else 0,
@@ -356,10 +351,8 @@ def set_icon():
     if icon not in ICON_POOL:
         return jsonify({"ok": False}), 400
     with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE users SET icon=%s WHERE username=%s",
-                        (icon, session["user"]))
-        conn.commit()
+        conn.execute("UPDATE users SET icon=%s WHERE username=%s",
+                     (icon, session["user"]))
     return jsonify({"ok": True, "icon": icon})
 
 
@@ -382,12 +375,10 @@ def on_connect():
     pref_icon = 1
     try:
         with db() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("SELECT icon FROM users WHERE username=%s",
-                            (session["user"],))
-                row = cur.fetchone()
-                if row and row["icon"]:
-                    pref_icon = row["icon"]
+            row = conn.execute("SELECT icon FROM users WHERE username=%s",
+                               (session["user"],)).fetchone()
+            if row and row["icon"]:
+                pref_icon = row["icon"]
     except Exception:
         pass
 
@@ -1442,20 +1433,16 @@ def end_game(winner):
     if winner and not winner["is_bot"]:
         try:
             with db() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("UPDATE users SET wins=wins+1, games=games+1 WHERE username=%s",
-                                (winner["name"],))
-                conn.commit()
+                conn.execute("UPDATE users SET wins=wins+1, games=games+1 WHERE username=%s",
+                             (winner["name"],))
         except Exception:
             pass
     for sid, p in STATE.players.items():
         if not p["is_bot"] and p["name"] != name:
             try:
                 with db() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("UPDATE users SET games=games+1 WHERE username=%s",
-                                    (p["name"],))
-                    conn.commit()
+                    conn.execute("UPDATE users SET games=games+1 WHERE username=%s",
+                                 (p["name"],))
             except Exception:
                 pass
     socketio.emit("end", {"winner": name, "leaderboard": board})
