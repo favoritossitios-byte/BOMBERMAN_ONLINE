@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8">
+  <title>Bomberman Online</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="menu">
+  <main class="menu-shell">
+    <header class="menu-head">
+      <h1 class="brand">BOMBERMAN<span>·online</span></h1>
+      <button class="link-btn" onclick="location.href='{{ url_for('logout') }}'">sair</button>
+    </header>
+
+    <section class="hero">
+      <div class="picker">
+        <button class="arrow" id="prev" aria-label="anterior">‹</button>
+        <div class="picker-frame">
+          <img id="icon-img" src="{{ url_for('static', filename='imgs/player_icons/' ~ icon ~ '.png') }}" alt="ícone">
+          <div class="picker-index"><span id="icon-idx">{{ icon }}</span> / {{ icon_count }}</div>
+        </div>
+        <button class="arrow" id="next" aria-label="seguinte">›</button>
+      </div>
+
+      <div class="profile">
+        <div class="profile-name">{{ user }}</div>
+        <div class="profile-stats">
+          <span><b>{{ wins }}</b> vitórias</span>
+          <span class="dot">·</span>
+          <span><b>{{ games }}</b> jogos</span>
+        </div>
+        <a class="play-btn" href="{{ url_for('play') }}">JOGAR</a>
+      </div>
+    </section>
+
+    <footer class="menu-foot">
+      <span>setas / WASD mover</span>
+      <span class="dot">·</span>
+      <span>espaço bomba</span>
+      <span class="dot">·</span>
+      <span>mapa 15×13 · 16 jogadores</span>
+    </footer>
+  </main>
+
+  <script>
+    const TOTAL = {{ icon_count }};
+    let icon = {{ icon }};
+    const imgEl = document.getElementById("icon-img");
+    const idxEl = document.getElementById("icon-idx");
+
+    function setIcon(n) {
+      icon = ((n - 1 + TOTAL) % TOTAL) + 1;
+      imgEl.src = `/static/imgs/player_icons/${icon}.png`;
+      idxEl.textContent = icon;
+      fetch("{{ url_for('set_icon') }}", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ icon }),
+      }).catch(() => {});
+    }
+    document.getElementById("prev").addEventListener("click", () => setIcon(icon - 1));
+    document.getElementById("next").addEventListener("click", () => setIcon(icon + 1));
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowLeft")  setIcon(icon - 1);
+      if (e.key === "ArrowRight") setIcon(icon + 1);
+      if (e.key === "Enter")      location.href = "{{ url_for('play') }}";
+    });
+  </script>
+</body>
+</html>

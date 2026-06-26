@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8">
+  <title>Bomberman · Registar</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="auth">
+  <main class="auth-shell">
+    <h1 class="brand">BOMBERMAN<span>·online</span></h1>
+    <p class="auth-hint">Cria uma conta</p>
+    {% if error %}<p class="err">{{ error }}</p>{% endif %}
+    <form method="post" class="auth-form">
+      <input name="username" placeholder="username (min 3)" autofocus required autocomplete="username">
+      <input name="password" type="password" placeholder="password (min 4)" required autocomplete="new-password">
+      <button type="submit">registar</button>
+    </form>
+    <p class="auth-alt">já tens conta? <a href="{{ url_for('login') }}">entrar</a></p>
+  </main>
+</body>
+</html>

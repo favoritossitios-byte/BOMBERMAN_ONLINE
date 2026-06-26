@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8">
+  <title>Bomberman Online</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="game">
+  <div id="lobby" class="overlay">
+    <div class="panel">
+      <h2 class="panel-title">LOBBY</h2>
+      <p class="panel-sub">Começa em <span id="countdown" class="big-num">--</span>s · <span id="pcount">0</span>/16</p>
+      <ul id="plist" class="plist"></ul>
+      <button id="start-now" class="primary-btn hidden">▶ Começar agora</button>
+      <p id="host-hint" class="muted hidden">és o host, podes começar quando quiseres</p>
+    </div>
+  </div>
+
+  <div id="endscreen" class="overlay hidden">
+    <div class="panel wide">
+      <h2 class="panel-title">FIM DE JOGO</h2>
+      <p class="panel-sub">Vencedor: <strong id="winner" class="winner-name">—</strong></p>
+      <ol id="leaderboard" class="leaderboard"></ol>
+      <p class="muted">A reiniciar...</p>
+    </div>
+  </div>
+
+  <!-- Spectator banner: shown to dead/pure spectators. -->
+  <div id="spectator-bar" class="spectator-bar hidden">
+    <span class="spectator-tag">👁 ESPECTADOR</span>
+    <button id="terminate-btn" class="terminate-btn hidden">Terminar jogo</button>
+  </div>
+
+  <!-- Debug overlay indicator. Toggled by pressing B. -->
+  <div id="debug-indicator" class="debug-indicator hidden">
+    🔬 AI DEBUG <span class="debug-hint">(B para sair)</span>
+    <div class="debug-legend">
+      <span><span class="lg-sq" style="background:rgba(231,76,60,.45);border:1px solid #e74c3c"></span> blast</span>
+      <span><span class="lg-sq" style="background:#2ecc71"></span> flee</span>
+      <span><span class="lg-sq" style="background:#3498db"></span> seek</span>
+      <span><span class="lg-sq" style="background:#f1c40f"></span> target</span>
+    </div>
+  </div>
+
+  <div id="hud">
+    <div class="stat stat-fire">
+      <span class="stat-icon">🔥</span>
+      <span class="stat-val" id="hud-fire">2</span>
+    </div>
+    <div class="stat stat-bombs">
+      <span class="stat-icon">💣</span>
+      <span class="stat-val" id="hud-bombs">1</span>
+    </div>
+    <div class="stat stat-speed">
+      <span class="stat-icon">⚡</span>
+      <span class="stat-val" id="hud-speed">3.0</span>
+    </div>
+    <div class="stat stat-shield" id="hud-shield">
+      <span class="stat-icon">🛡</span>
+      <span class="stat-val" id="hud-shield-t">0</span>
+    </div>
+    <div class="stat stat-alive">
+      <span class="stat-icon">💀</span>
+      <span class="stat-val" id="hud-alive">0</span>
+    </div>
+  </div>
+
+  <canvas id="canvas"></canvas>
+
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="{{ url_for('static', filename='js/game.js') }}"></script>
+</body>
+</html>
