@@ -367,6 +367,24 @@ def play():
 @app.route("/admin/reset", methods=["POST"])
 def admin_reset():
     """Emergency reset — forces the global STATE back to a clean lobby."""
+    _force_reset()
+    return "OK", 200
+
+
+@app.route("/admin/status")
+def admin_status():
+    """Returns current STATE info for debugging."""
+    return jsonify({
+        "phase": STATE.phase,
+        "players": len(STATE.players),
+        "spectators": len(STATE.spectators),
+        "game_start_ts": STATE.game_start_ts,
+        "lobby_start_ts": STATE.lobby_start_ts,
+        "running_secs": round(time.time() - STATE.game_start_ts, 1) if STATE.game_start_ts else None,
+    })
+
+
+def _force_reset():
     with STATE.lock:
         STATE.phase = "lobby"
         STATE.players = {}
@@ -384,7 +402,6 @@ def admin_reset():
         STATE.debug_viewers = set()
         STATE.grid_dirty = True
     socketio.emit("reset", {})
-    return "OK", 200
 
 
 # ---------------------------------------------------------------------------
@@ -406,29 +423,38 @@ def on_connect():
     except Exception:
         pass
 
+    # Auto-reset if game is stuck (no humans alive or running > GAME_MAX_SECONDS).
     with STATE.lock:
         if STATE.phase == "playing":
-            # round already running — register as spectator, no player slot
-            STATE.spectators.add(sid)
-            emit("spectator", {})
-            emit("start", {"grid": STATE.grid, "map_w": MAP_W, "map_h": MAP_H,
-                           "spectating": True})
-            return
-        if STATE.phase in ("lobby", "starting"):
-            if len(STATE.players) >= MAX_PLAYERS:
-                emit("full", {})
+            no_humans = not any(not p["is_bot"] and p["alive"] for p in STATE.players.values())
+            stuck = STATE.game_start_ts and (time.time() - STATE.game_start_ts > GAME_MAX_SECONDS)
+            if not no_humans and not stuck:
+                STATE.spectators.add(sid)
+                emit("spectator", {})
+                emit("start", {"grid": STATE.grid, "map_w": MAP_W, "map_h": MAP_H,
+                               "spectating": True})
                 return
-            color = PLAYER_COLORS[len(STATE.players) % len(PLAYER_COLORS)]
-            p = new_player(session["user"])
-            p["color"] = color
-            p["icon"] = STATE.reserve_icon(pref_icon)
-            STATE.players[sid] = p
-            if STATE.host_sid is None:
-                STATE.host_sid = sid
-            if STATE.lobby_start_ts is None and STATE.phase == "lobby":
-                STATE.lobby_start_ts = time.time()
-                STATE.phase = "starting"
-                threading.Thread(target=lobby_countdown, daemon=True).start()
+    # Outside the lock: do the reset if needed (re-acquires lock internally).
+    with STATE.lock:
+        needs_reset = STATE.phase == "playing"
+    if needs_reset:
+        _force_reset()
+
+    with STATE.lock:
+        if len(STATE.players) >= MAX_PLAYERS:
+            emit("full", {})
+            return
+        color = PLAYER_COLORS[len(STATE.players) % len(PLAYER_COLORS)]
+        p = new_player(session["user"])
+        p["color"] = color
+        p["icon"] = STATE.reserve_icon(pref_icon)
+        STATE.players[sid] = p
+        if STATE.host_sid is None:
+            STATE.host_sid = sid
+        if STATE.lobby_start_ts is None and STATE.phase == "lobby":
+            STATE.lobby_start_ts = time.time()
+            STATE.phase = "starting"
+            threading.Thread(target=lobby_countdown, daemon=True).start()
         emit("hello", {"sid": sid, "you": session["user"],
                        "is_host": sid == STATE.host_sid})
     broadcast_lobby()
