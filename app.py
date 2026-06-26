@@ -899,12 +899,15 @@ def roll_powerup(x, y):
 
 
 def apply_powerup(p, kind):
+    # No caps — bombs/fire/speed stack indefinitely. With 20 powerups in
+    # one round a player can become a one-tile-radius walking nuke; that's
+    # the trade-off for risking the open map to grab them.
     if kind == "fire":
-        p["fire"] = min(p["fire"] + 1, 10)
+        p["fire"] += 1
     elif kind == "bombs":
-        p["max_bombs"] = min(p["max_bombs"] + 1, 8)
+        p["max_bombs"] += 1
     elif kind == "speed":
-        p["speed"] = min(p["speed"] + 0.6, 7.0)
+        p["speed"] += 0.6
     elif kind == "shield":
         p["shield_until"] = time.time() + SHIELD_DURATION
     elif kind == "hp":
@@ -950,19 +953,21 @@ def take_damage(p, sid, now, source="bomb", killer_sid=None):
 # ---------------------------------------------------------------------------
 def _spawn_poison(x, y, now):
     """Drop a poison tile at (x,y). Inert for POISON_ARM_S, then damages.
-    Will try to propagate once after POISON_PROPAGATE_S (own clock)."""
+    Tries to propagate to one passable neighbour every POISON_PROPAGATE_S,
+    repeatedly — so the field really does grow over the round (and so a
+    poison whose neighbours were all blocked at one moment gets another
+    shot later, instead of being stuck forever)."""
     STATE.poisons[(x, y)] = {
         "spawned_at": now,
         "armed_at": now + POISON_ARM_S,
-        "propagate_at": now + POISON_PROPAGATE_S,
-        "propagated": False,
+        "next_propagate_at": now + POISON_PROPAGATE_S,
     }
 
 
 def update_poison(now):
     """Seed the initial poison sources POISON_FIRST_SPAWN_S into the round,
-    then have each existing poison try to spread to one neighbour after its
-    own POISON_PROPAGATE_S delay (only once per tile)."""
+    then have each existing poison try to spread to one neighbour every
+    POISON_PROPAGATE_S seconds (own clock per tile)."""
     if STATE.game_start_ts is None:
         return
     elapsed = now - STATE.game_start_ts
@@ -994,13 +999,19 @@ def update_poison(now):
         if candidates:
             print(f"[poison] seeded {min(len(candidates), POISON_INITIAL_SOURCES)} sources")
 
-    # Propagation: each poison spreads once to a passable neighbour.
+    # Propagation: each poison tries every POISON_PROPAGATE_S to spread to
+    # one passable neighbour. Whether it succeeds or not, push its next
+    # attempt POISON_PROPAGATE_S into the future — so a tile whose
+    # neighbours were all blocked this round can try again later, and a
+    # tile that did spread doesn't immediately spam another spread.
     if not STATE.poisons:
         return
     new_tiles = []
+    pending = set()  # tiles we're about to add this tick; treat as occupied
     for (x, y), ps in STATE.poisons.items():
-        if ps["propagated"] or now < ps["propagate_at"]:
+        if now < ps["next_propagate_at"]:
             continue
+        ps["next_propagate_at"] = now + POISON_PROPAGATE_S
         neighbours = []
         for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
             nx, ny = x + dx, y + dy
@@ -1008,12 +1019,13 @@ def update_poison(now):
                 continue
             if STATE.grid[ny][nx] != T_EMPTY:
                 continue
-            if (nx, ny) in STATE.poisons:
+            if (nx, ny) in STATE.poisons or (nx, ny) in pending:
                 continue
             neighbours.append((nx, ny))
-        ps["propagated"] = True
         if neighbours:
-            new_tiles.append(random.choice(neighbours))
+            choice = random.choice(neighbours)
+            pending.add(choice)
+            new_tiles.append(choice)
     for (x, y) in new_tiles:
         if (x, y) not in STATE.poisons:
             _spawn_poison(x, y, now)
