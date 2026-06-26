@@ -899,15 +899,16 @@ def roll_powerup(x, y):
 
 
 def apply_powerup(p, kind):
-    # No caps — bombs/fire/speed stack indefinitely. With 20 powerups in
-    # one round a player can become a one-tile-radius walking nuke; that's
-    # the trade-off for risking the open map to grab them.
+    # No caps on fire/bombs (stacking is the reward for risking the open
+    # map). Speed IS capped — uncapped speed makes the game feel awful
+    # because the player overshoots tiles faster than the prediction loop
+    # can react.
     if kind == "fire":
         p["fire"] += 1
     elif kind == "bombs":
         p["max_bombs"] += 1
     elif kind == "speed":
-        p["speed"] += 0.6
+        p["speed"] = min(p["speed"] + 0.6, 7.0)
     elif kind == "shield":
         p["shield_until"] = time.time() + SHIELD_DURATION
     elif kind == "hp":
@@ -975,9 +976,12 @@ def update_poison(now):
     # Initial seeding (once).
     if not STATE.poison_seeded and elapsed >= POISON_FIRST_SPAWN_S:
         STATE.poison_seeded = True
-        # Pick empty floor tiles that aren't already a powerup or bomb.
-        # Try to avoid spawning right on top of a living player by keeping a
-        # 2-tile clearance.
+        # Poison creeps in from the edges of the map. We pick empty floor
+        # tiles ranked by distance-to-nearest-edge (closest first), then
+        # take the POISON_INITIAL_SOURCES tiles with the smallest edge
+        # distance — broken ties by shuffling so it isn't always the same
+        # corner. This squeezes campers off the perimeter while leaving
+        # the center safe for a while.
         candidates = []
         alive_xy = [(int(p["x"]), int(p["y"])) for p in STATE.players.values()
                     if p["alive"]]
@@ -992,12 +996,18 @@ def update_poison(now):
                                 for ax, ay in alive_xy)
                 if too_close:
                     continue
-                candidates.append((x, y))
+                edge_dist = min(x, MAP_W - 1 - x, y, MAP_H - 1 - y)
+                candidates.append((edge_dist, x, y))
+        # Shuffle first so ties (same edge_dist) come out in random order,
+        # then sort by edge_dist ascending so the edgemost tiles win.
         random.shuffle(candidates)
-        for (x, y) in candidates[:POISON_INITIAL_SOURCES]:
+        candidates.sort(key=lambda c: c[0])
+        picked = candidates[:POISON_INITIAL_SOURCES]
+        for (_, x, y) in picked:
             _spawn_poison(x, y, now)
-        if candidates:
-            print(f"[poison] seeded {min(len(candidates), POISON_INITIAL_SOURCES)} sources")
+        if picked:
+            print(f"[poison] seeded {len(picked)} sources at edges "
+                  f"(edge_dist={[c[0] for c in picked]})")
 
     # Propagation: each poison tries every POISON_PROPAGATE_S to spread to
     # one passable neighbour. Whether it succeeds or not, push its next
