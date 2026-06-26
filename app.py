@@ -326,6 +326,28 @@ def login():
             error = "Credenciais inválidas."
     return render_template("login.html", error=error)
 
+@app.route("/reset_lobby", methods=["GET", "POST"])
+def reset_lobby():
+    """
+    Reseta o lobby à força. Pode ser chamado via GET ou POST.
+    Exemplo de uso no browser: /reset_lobby?pass=tua_password_secreta
+    """
+    # Tenta ir buscar a password aos query parameters (GET) ou ao form (POST)
+    provided_pass = request.args.get("pass")
+    if not provided_pass and request.is_json:
+        provided_pass = request.json.get("pass")
+    if not provided_pass and request.form:
+        provided_pass = request.form.get("pass")
+        
+    # Define a password esperada (idealmente através de variável de ambiente, 
+    # mas deixamos um fallback 'admin123' para testares)
+    expected_pass = os.environ.get("ADMIN_PASSWORD", "admin123")
+    
+    if provided_pass == expected_pass:
+        _force_reset()
+        return jsonify({"ok": True, "message": "O lobby e o estado do jogo foram resetados com sucesso!"}), 200
+    else:
+        return jsonify({"ok": False, "message": "Acesso negado: password incorreta ou ausente."}), 403
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
