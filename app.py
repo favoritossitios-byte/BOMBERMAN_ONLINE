@@ -52,8 +52,7 @@ ICON_POOL = list(range(1, 21))
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", secrets.token_hex(32))
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading",
-                    logger=True, engineio_logger=True)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 

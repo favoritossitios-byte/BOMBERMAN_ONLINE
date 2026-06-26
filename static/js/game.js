@@ -1,7 +1,5 @@
 // Bomberman client
-const socket = io(window._socket_url || window.location.origin, {
-  transports: ["polling", "websocket"],
-});
+const socket = io();
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 ctx.imageSmoothingEnabled = true;
