@@ -34,6 +34,11 @@ let lastTickTime = null;
 // Debug overlay — press B to toggle.
 let debugMode = false;
 
+// Outgoing position update throttle. We tell the server where we are 20x
+// per second (every 50ms). The server trusts us and uses it verbatim.
+let lastPosSent = 0;
+const POS_SEND_INTERVAL_MS = 50;
+
 // Preload all 20 player icons up-front so rendering never blocks on disk IO.
 const ICON_IMGS = {};
 for (let i = 1; i <= 20; i++) {
@@ -252,32 +257,31 @@ socket.on("snap", (s) => {
     mapDirty = true;
   }
 
-  // Reconcile predicted position with server authority.
-  // If the server says we're dead, stop predicting.
+  // Movement is fully client-authoritative for our own player — we send our
+  // position to the server, not the other way around. We only sync from the
+  // server snapshot on:
+  //   - the first snap after (re)spawn, to seed our position
+  //   - when the server says we're dead (so we stop predicting)
+  //   - if somehow we drift impossibly far from server (>3 tiles): hard snap
+  //     (defensive, shouldn't happen normally).
   if (!spectating) {
     const me = s.players.find(p => p.id === mySid);
     if (me) {
       predicted.speed = me.speed;
       predicted.alive = me.alive;
       if (!predictionActive) {
-        // First snap — seed predicted position from server.
         predicted.x = me.x;
         predicted.y = me.y;
         predictionActive = true;
       } else {
-        // Soft reconciliation: blend server position toward predicted.
-        // If server disagrees by more than 1.5 tiles, snap hard (wall correction).
         const dx = me.x - predicted.x;
         const dy = me.y - predicted.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist > 1.5) {
+        if (dx * dx + dy * dy > 9) {
+          // 3+ tile divergence — something is very wrong, hard snap.
           predicted.x = me.x;
           predicted.y = me.y;
-        } else {
-          // Gentle pull toward server (20% blend per snap).
-          predicted.x += dx * 0.2;
-          predicted.y += dy * 0.2;
         }
+        // Otherwise: trust the client. Server position is ignored.
       }
     }
   }
@@ -456,6 +460,12 @@ function draw(now) {
     const dir = currentDir();
     if (dir && predicted.alive) {
       moveLocal(predicted, dir, dt);
+    }
+    // Report our position to the server at ~20Hz. Server uses this as
+    // authoritative for our player — no rubber-banding, no reconciliation.
+    if (predicted.alive && now - lastPosSent >= POS_SEND_INTERVAL_MS) {
+      socket.emit("pos", { x: predicted.x, y: predicted.y });
+      lastPosSent = now;
     }
   } else {
     lastTickTime = now;

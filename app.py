@@ -528,6 +528,36 @@ def on_input(data):
             p["move_dir"] = d
 
 
+@socketio.on("pos")
+def on_pos(data):
+    """Client-authoritative position update for human players.
+
+    The client simulates its own movement (collision included) and reports
+    its position ~20 times per second. We trust it — we only clamp to the
+    map bounds so a buggy/malicious client can't drift to NaN coordinates.
+    Bombs, explosions, damage and powerups remain server-authoritative, so
+    the worst a cheater can do is teleport themselves into a wall, which
+    just gets them killed faster.
+    """
+    sid = request.sid
+    with STATE.lock:
+        if sid not in STATE.players or STATE.phase != "playing":
+            return
+        p = STATE.players[sid]
+        if not p["alive"] or p["is_bot"]:
+            return
+        try:
+            x = float(data.get("x"))
+            y = float(data.get("y"))
+        except (TypeError, ValueError):
+            return
+        # Clamp to playable area (walls are at the edges).
+        x = max(0.5, min(MAP_W - 0.5, x))
+        y = max(0.5, min(MAP_H - 0.5, y))
+        p["x"] = x
+        p["y"] = y
+
+
 @socketio.on("bomb")
 def on_bomb():
     sid = request.sid
@@ -637,7 +667,7 @@ def game_loop():
                 return
             tick(dt, now)
             snapshot_acc += dt
-            if snapshot_acc >= 1 / 12:  # 12 snapshots/sec (interpolated client-side)
+            if snapshot_acc >= 1 / 20:  # 20 snapshots/sec (interpolated client-side)
                 send_snapshot()
                 snapshot_acc = 0
             check_win()
@@ -680,8 +710,11 @@ def tick(dt, now):
             except Exception as ex:
                 print(f"[bot {p['name']}] {ex.__class__.__name__}: {ex}")
                 p["move_dir"] = None
-        if p["move_dir"]:
-            move_player(p, dt)
+            if p["move_dir"]:
+                move_player(p, dt)
+        # Humans don't get simulated here — they send their own position via
+        # the "pos" socket event (client-authoritative movement). The server
+        # still owns bombs, explosions, damage and powerups.
 
     # bombs
     for b in list(STATE.bombs):
