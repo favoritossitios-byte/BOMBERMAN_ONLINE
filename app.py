@@ -410,7 +410,9 @@ def _force_reset():
 @socketio.on("connect")
 def on_connect():
     if "user" not in session:
+        print(f"[connect] REJECTED — no session. cookies={request.cookies.keys()}")
         return False
+    print(f"[connect] user={session['user']} sid={request.sid} phase={STATE.phase}")
     sid = request.sid
     # Look up the player's chosen icon from the DB.
     pref_icon = 1
