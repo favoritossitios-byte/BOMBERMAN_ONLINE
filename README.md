@@ -1,3 +1,6 @@
+# PLAY HERE
+https://bombermanonline-production.up.railway.app
+
 # Bomberman Online
 
 Bomberman multiplayer em browser. Flask + Socket.IO + Canvas. Mapa 60×52 (4× o original 15×13), até 16 jogadores, bots preenchem o resto.
